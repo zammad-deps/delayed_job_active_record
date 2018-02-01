@@ -35,7 +35,7 @@ module Delayed
                           :failed_at, :locked_at, :locked_by, :handler
         end
 
-        scope :by_priority, lambda { order("priority ASC, run_at ASC") }
+        scope :by_priority, lambda { order(:priority, :run_at) }
         scope :min_priority, lambda { where("priority >= ?", Worker.min_priority) if Worker.min_priority }
         scope :max_priority, lambda { where("priority <= ?", Worker.max_priority) if Worker.max_priority }
         scope :for_queues, lambda { |queues = Worker.queues| where(queue: queues) if Array(queues).any? }
@@ -49,11 +49,14 @@ module Delayed
 
         set_delayed_job_table_name
 
-        def self.ready_to_run(worker_name, max_run_time)
-          where(
-            "failed_at IS NULL AND run_at <= :now AND ((locked_at IS NULL OR locked_at < :timeout) OR locked_by = :name)", # rubocop:disable Metrics/LineLength
-            now: db_time_now, timeout: db_time_now - max_run_time, name: worker_name
-          )
+        def self.ready_to_run(worker_name, max_run_time) # rubocop:disable Metrics/AbcSize
+          lock_expired = arel_table[:locked_at].lt(db_time_now - max_run_time)
+          not_locked = arel_table[:locked_at].eq(nil).or(lock_expired)
+          locked_by_me = arel_table[:locked_by].eq(worker_name)
+
+          where(failed_at: nil)
+            .where(arel_table[:run_at].lteq(db_time_now))
+            .where(not_locked.or(locked_by_me))
         end
 
         def self.before_fork
@@ -121,7 +124,7 @@ module Delayed
           # Note: active_record would attempt to generate UPDATE...LIMIT like
           # SQL for Postgres if we use a .limit() filter, but it would not
           # use 'FOR UPDATE' and we would have many locking conflicts
-          quoted_table_name = connection.quote_table_name(table_name)
+          quoted_table_name = Delayed::Job.arel_table.alias(:dj).to_sql
           subquery_sql = ready_scope.limit(1).lock(true).select("id").to_sql
           sql = <<-SQL.squish
             WITH sub AS (#{subquery_sql})
