@@ -143,9 +143,11 @@ module Delayed
           end
 
           quoted_name = connection.quote_table_name(table_name)
+          # Postgres planner may loose LIMIT in a subquery with IN operator
+          # https://github.com/collectiveidea/delayed_job_active_record/issues/143
           find_by_sql(
             [
-              "UPDATE #{quoted_name} SET locked_at = ?, locked_by = ? WHERE id IN (#{subquery}) RETURNING *",
+              "UPDATE #{quoted_name} SET locked_at = ?, locked_by = ? WHERE id = (#{subquery}) RETURNING *",
               now,
               worker.name
             ]
